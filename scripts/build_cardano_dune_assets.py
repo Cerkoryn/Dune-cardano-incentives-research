@@ -19,6 +19,8 @@ SQL_FILE = DUNE_DIR / "cardano_stake_concentration.sql"
 GROUPDATA_URL = "https://www.balanceanalytics.io/api/groupdata.json"
 SOURCE = "https://www.balanceanalytics.io/api/groupdata.json"
 
+BECH32_CHARSET = "qpzry9x8gf2tvdw0s3jn54khce6mua7l"
+
 
 SQL_PREFIX = """WITH pool_group_map(pool_hash, operator_group) AS (
   VALUES
@@ -84,13 +86,13 @@ ranked AS (
   FROM entity_stake
 ),
 
-nc AS (
+mav AS (
   SELECT
     entity_level,
     epoch,
-    MIN(entity_rank) AS nakamoto_51
+    MIN(entity_rank) AS mav
   FROM ranked
-  WHERE CAST(cumulative_lovelace AS DOUBLE) >= CAST(total_lovelace AS DOUBLE) * 0.51
+  WHERE CAST(cumulative_lovelace AS DOUBLE) >= CAST(total_lovelace AS DOUBLE) * 0.50
   GROUP BY 1, 2
 ),
 
@@ -105,11 +107,11 @@ totals AS (
 SELECT
   t.epoch,
   t.total_staked_ada,
-  MAX(CASE WHEN n.entity_level = 'pool' THEN n.nakamoto_51 END) AS nakamoto_coefficient_pools_51,
-  MAX(CASE WHEN n.entity_level = 'operator_group' THEN n.nakamoto_51 END) AS nakamoto_coefficient_operator_groups_51
+  MAX(CASE WHEN m.entity_level = 'pool' THEN m.mav END) AS ungrouped_mav,
+  MAX(CASE WHEN m.entity_level = 'operator_group' THEN m.mav END) AS grouped_mav
 FROM totals t
-JOIN nc n
-  ON t.epoch = n.epoch
+JOIN mav m
+  ON t.epoch = m.epoch
 GROUP BY 1, 2
 ORDER BY 1;
 """
@@ -119,8 +121,82 @@ def sql_string(value: str) -> str:
     return "'" + value.replace("'", "''") + "'"
 
 
-def normalized_group(row: dict[str, str]) -> str:
-    pool_hash = row["pool_hash"].strip()
+def bech32_polymod(values: list[int]) -> int:
+    generators = [0x3B6A57B2, 0x26508E6D, 0x1EA119FA, 0x3D4233DD, 0x2A1462B3]
+    chk = 1
+    for value in values:
+        top = chk >> 25
+        chk = (chk & 0x1FFFFFF) << 5 ^ value
+        for index, generator in enumerate(generators):
+            if (top >> index) & 1:
+                chk ^= generator
+    return chk
+
+
+def bech32_hrp_expand(hrp: str) -> list[int]:
+    return [ord(char) >> 5 for char in hrp] + [0] + [ord(char) & 31 for char in hrp]
+
+
+def bech32_decode(value: str) -> tuple[str, list[int]]:
+    if value.lower() != value and value.upper() != value:
+        raise ValueError(f"mixed-case bech32 value: {value}")
+
+    value = value.lower()
+    separator_index = value.rfind("1")
+    if separator_index < 1:
+        raise ValueError(f"missing bech32 separator: {value}")
+    if separator_index + 7 > len(value):
+        raise ValueError(f"bech32 data too short: {value}")
+
+    hrp = value[:separator_index]
+    data = []
+    for char in value[separator_index + 1 :]:
+        try:
+            data.append(BECH32_CHARSET.index(char))
+        except ValueError as exc:
+            raise ValueError(f"invalid bech32 character {char!r}: {value}") from exc
+
+    if bech32_polymod(bech32_hrp_expand(hrp) + data) != 1:
+        raise ValueError(f"invalid bech32 checksum: {value}")
+    return hrp, data[:-6]
+
+
+def convert_bits(data: list[int], from_bits: int, to_bits: int, pad: bool) -> list[int]:
+    acc = 0
+    bits = 0
+    ret = []
+    maxv = (1 << to_bits) - 1
+    max_acc = (1 << (from_bits + to_bits - 1)) - 1
+
+    for value in data:
+        if value < 0 or value >> from_bits:
+            raise ValueError(f"invalid {from_bits}-bit value: {value}")
+        acc = ((acc << from_bits) | value) & max_acc
+        bits += from_bits
+        while bits >= to_bits:
+            bits -= to_bits
+            ret.append((acc >> bits) & maxv)
+
+    if pad:
+        if bits:
+            ret.append((acc << (to_bits - bits)) & maxv)
+    elif bits >= from_bits or ((acc << (to_bits - bits)) & maxv):
+        raise ValueError("invalid trailing bits in bech32 data")
+
+    return ret
+
+
+def decode_pool_id(pool_id: str) -> str:
+    hrp, data = bech32_decode(pool_id.strip())
+    if hrp != "pool":
+        raise ValueError(f"expected pool bech32 HRP, got {hrp!r}: {pool_id}")
+    decoded = bytes(convert_bits(data, 5, 8, False))
+    if len(decoded) != 28:
+        raise ValueError(f"expected 28-byte pool hash, got {len(decoded)} bytes: {pool_id}")
+    return decoded.hex()
+
+
+def normalized_group(row: dict[str, str], pool_hash: str) -> str:
     pool_group = row["pool_group"].strip()
     return pool_hash if pool_group == "SINGLEPOOL" else pool_group
 
@@ -137,15 +213,18 @@ def write_csv(rows: list[dict[str, str]], generated_at: str) -> None:
     with GROUP_CSV.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.DictWriter(
             handle,
-            fieldnames=["pool_hash", "operator_group", "source", "generated_at"],
+            fieldnames=["pool_hash", "pool_id", "operator_group", "source", "generated_at"],
             lineterminator="\n",
         )
         writer.writeheader()
         for row in rows:
+            pool_id = row["pool_hash"].strip()
+            pool_hash = decode_pool_id(pool_id)
             writer.writerow(
                 {
-                    "pool_hash": row["pool_hash"].strip(),
-                    "operator_group": normalized_group(row),
+                    "pool_hash": pool_hash,
+                    "pool_id": pool_id,
+                    "operator_group": normalized_group(row, pool_hash),
                     "source": SOURCE,
                     "generated_at": generated_at,
                 }
@@ -157,12 +236,13 @@ def write_sql(rows: list[dict[str, str]], generated_at: str) -> None:
     values = []
     grouped_rows = [row for row in rows if row["pool_group"].strip() != "SINGLEPOOL"]
     for row in grouped_rows:
+        pool_hash = decode_pool_id(row["pool_hash"].strip())
         values.append(
             "    ("
             + ", ".join(
                 [
-                    sql_string(row["pool_hash"].strip()),
-                    sql_string(normalized_group(row)),
+                    sql_string(pool_hash),
+                    sql_string(normalized_group(row, pool_hash)),
                 ]
             )
             + ")"
@@ -177,7 +257,7 @@ def main() -> None:
     write_sql(rows, generated_at)
     print(f"Wrote {len(rows):,} pool mappings to {GROUP_CSV}")
     print(
-        "Wrote only non-SINGLEPOOL mappings into SQL; unmapped pools are singleton groups."
+        "Decoded Balance bech32 pool IDs to hex pool hashes for direct Dune joins."
     )
     print(f"Wrote Dune SQL to {SQL_FILE}")
 
