@@ -1,42 +1,65 @@
 # Cardano Dune Research
 
-Assets for Cardano stake concentration analysis on Dune.
+Assets for the Cardano incentives research dashboard on Dune:
+https://dune.com/cerkoryn/cardano-incentives-research
 
-## First Chart
+The production data flow keeps each source narrow:
 
-- Dune query: https://dune.com/queries/7531566
-- Dune visualization: https://dune.com/embeds/7531566/11482345
-- Dune dashboard: https://dune.com/cerkoryn/cardano-incentives-research
+- Dune `cardano.epoch_stake` for active delegated stake.
+- Dune `cardano.block` for block-producing pool counts.
+- Dune `cardano.adapot` for gross reward-pot values.
+- Koios/Tosidrop-derived CSVs for declared pledge, pool lifecycle, protocol params, and network metrics.
+- `cardano-community/pool_groups` for MAV/MAP and sSPO/MPO operator grouping.
 
-The deployed query computes total staked ADA and 50% Minimum Attack Vector (MAV) values by epoch. The ungrouped MAV treats each stake pool independently.
+All visible charts use fixed epoch bounds of `210..630` so dashboard x-axes stay aligned.
 
-The grouped MAV uses the uploaded Balance Analytics mapping at `dune.cerkoryn.dataset_cardano_pool_group_map` to combine pools identified as belonging to the same operator group. The CSV stores Balance pool IDs plus locally decoded hex pool hashes, so the query joins directly to `cardano.epoch_stake` without relying on Dune pool metadata.
+## Live Dashboard Queries
 
-## Regenerate Mapping Assets
+| Chart | Query | Visualization | Local SQL |
+| --- | --- | --- | --- |
+| Protocol Parameters | https://dune.com/queries/7540221 | https://dune.com/embeds/7540221/11491433 | `dune/cardano_protocol_parameter_timeline.sql` |
+| MAV vs MAP | https://dune.com/queries/7532894 | https://dune.com/embeds/7532894/11483818 | `dune/cardano_mav_min_aggregate_pledge.sql` |
+| >50% Stake/Pledge Cost | https://dune.com/queries/7544957 | https://dune.com/embeds/7544957/11496455 | `dune/cardano_stake_control_cost.sql` |
+| Pledge vs Stake | https://dune.com/queries/7532966 | https://dune.com/embeds/7532966/11483875 | `dune/cardano_total_staked_vs_pledged.sql` |
+| Pledge USD Cost vs Staking Rewards | https://dune.com/queries/7538277 | https://dune.com/embeds/7538277/11489404 | `dune/cardano_usd_to_30pct_pledge.sql` |
+| Active Pools | https://dune.com/queries/7538507 | https://dune.com/embeds/7538507/11489651 | `dune/cardano_pool_count_breakdown.sql` |
+| Single Pools vs MPOs | https://dune.com/queries/7540345 | https://dune.com/embeds/7540345/11491600 | `dune/cardano_sspo_vs_mpo_timeline.sql` |
+| Pool Registrations vs Retirements | https://dune.com/queries/7541511 | https://dune.com/embeds/7541511/11492807 | `dune/cardano_pool_registrations_vs_retirements.sql` |
 
-```powershell
-python scripts\build_cardano_dune_assets.py
-```
+## Uploaded CSV Tables
 
-## Upload the Accurate Group Map to Dune
+These uploaded Dune tables are used by at least one live dashboard query:
 
-Uploaded table currently used by the query:
+| Dune table | Local CSV | Used by |
+| --- | --- | --- |
+| `dune.cerkoryn.dataset_cardano_epoch_network_metrics` | `data/cardano_epoch_network_metrics.csv` | pledge cost, ROI, staking participation, saturation |
+| `dune.cerkoryn.dataset_cardano_epoch_protocol_params` | `data/cardano_epoch_protocol_params.csv` | protocol parameter timeline |
+| `dune.cerkoryn.dataset_cardano_ior_inactive_pools` | `data/cardano_ior_inactive_pools.csv` | active pool count chart only |
+| `dune.cerkoryn.dataset_cardano_pool_groups_map` | `data/cardano_pool_groups_map.csv` | MAV/MAP, stake-control cost, and sSPO/MPO charts |
+| `dune.cerkoryn.dataset_cardano_pool_pledge_intervals` | `data/cardano_pool_pledge_intervals.csv` | declared pledge and MAP charts |
+| `dune.cerkoryn.dataset_cardano_pool_registrations` | `data/cardano_pool_registrations.csv` | pool lifecycle chart |
+| `dune.cerkoryn.dataset_cardano_pool_retirements` | `data/cardano_pool_retirements.csv` | active pool count and lifecycle charts |
 
-```sql
-dune.cerkoryn.dataset_cardano_pool_group_map
-```
+`dune.cerkoryn.dataset_cardano_pool_owner_intervals` and `dune.cerkoryn.dataset_cardano_pool_group_map` are visible in the Dune upload UI but are not referenced by any live dashboard query. Owner intervals were generated for the abandoned live-pledge approach, and `cardano_pool_group_map` was the earlier Balance Analytics grouping table.
 
-If the table is recreated under another handle or dataset name, update `dune/cardano_stake_concentration_uploaded_group_map.sql` and the saved Dune query with the new table name.
+## Regeneration Scripts
 
-Expected CSV columns:
+| Script | Primary output |
+| --- | --- |
+| `scripts/build_cardano_epoch_network_metrics.py` | `data/cardano_epoch_network_metrics.csv` |
+| `scripts/build_cardano_epoch_protocol_params.py` | `data/cardano_epoch_protocol_params.csv` |
+| `scripts/build_cardano_pool_groups_map.py` | `data/cardano_pool_groups_map.csv` |
+| `scripts/build_cardano_pledge_history.py` | `data/cardano_pool_pledge_intervals.csv` |
+| `scripts/build_cardano_pool_count_filters.py` | `data/cardano_ior_inactive_pools.csv`, `data/cardano_pool_registrations.csv`, `data/cardano_pool_retirements.csv` |
 
-```csv
-pool_hash,pool_id,operator_group,source,generated_at
-```
+`scripts/build_cardano_pledge_history.py` can also generate owner-interval data, but owner intervals are intentionally excluded from current production SQL.
 
-`pool_hash` is the decoded hex hash used by `cardano.epoch_stake`. `pool_id` is the original Balance bech32 pool ID. Balance `SINGLEPOOL` entries use their own hex `pool_hash` as `operator_group`.
+## Metric Notes
 
-## QA Queries
+- MAV means Minimum Attack Vector and is synonymous here with Nakamoto Coefficient.
+- MAP means Min Aggregate Pledge and uses declared pledge only.
+- Grouped MAV/MAP uses `cardano-community/pool_groups`; ungrouped MAV/MAP treats each pool independently.
+- Declared pledge values above 45B ADA are treated as malformed and filtered to zero in SQL.
+- The active pool count chart has local-only filters: it excludes the Input Output Research November 2025 inactive-pool list and pools retired by epoch.
 
-- `dune/cardano_mav_qa_targets.sql` compares 50% and 51% grouped and ungrouped MAV for epochs 227, 234, and 628.
-- `dune/cardano_mav_qa_top30_groups.sql` lists the top 30 grouped entities for those epochs with cumulative stake and threshold-crossing ranks.
+MAP reference: https://dl.acm.org/doi/fullHtml/10.1145/3533271.3561787
