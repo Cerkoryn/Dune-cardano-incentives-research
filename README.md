@@ -61,6 +61,7 @@ These uploaded Dune tables are used by at least one live dashboard query:
 - Grouped MAV/MAP uses `cardano-community/pool_groups`; ungrouped MAV/MAP treats each pool independently.
 - `Group MAV w/d` includes the Shelley-era `d` parameter as a federated block-production entity; after `d=0`, it equals grouped MAV.
 - `d Impact on MAV` is the difference between grouped MAV and `Group MAV w/d`.
+- `Oversat if k=1000` sums active delegated ADA above the counterfactual per-pool saturation cap of `circulation / 1000`. It uses actual per-pool active stake and does not model redelegation or pool splitting.
 - Declared pledge values above 45B ADA are treated as malformed and filtered to zero in SQL.
 - The active pool count chart has local-only filters: it excludes the Input Output Research November 2025 inactive-pool list and pools retired by epoch.
 

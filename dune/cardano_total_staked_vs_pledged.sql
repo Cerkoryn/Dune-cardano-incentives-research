@@ -57,6 +57,7 @@ pool_metrics AS (
     en.k,
     en.circulation_lovelace,
     CAST(en.circulation_lovelace AS DOUBLE) / 1e6 / en.k AS saturation_ada,
+    CAST(en.circulation_lovelace AS DOUBLE) / 1000 AS saturation_lovelace_if_k_1000,
     CAST(en.circulation_lovelace AS DOUBLE) / en.k * 0.30 AS pledge_30pct_saturation_lovelace,
     CAST(en.circulation_lovelace AS DOUBLE) / 1e6 / en.k * 0.30 AS pledge_30pct_saturation_ada,
     COALESCE(CAST(dp.declared_pledge_lovelace AS DOUBLE), 0) AS declared_pledge_lovelace
@@ -77,6 +78,7 @@ metrics AS (
     MAX(CAST(circulation_lovelace AS DOUBLE)) / 1e6 AS circulating_supply_ada,
     SUM(stake_lovelace) / 1e6 AS total_staked_ada,
     SUM(declared_pledge_lovelace) / 1e6 AS total_declared_pledge_ada,
+    SUM(GREATEST(CAST(stake_lovelace AS DOUBLE) - saturation_lovelace_if_k_1000, 0)) / 1e6 AS oversat_if_k_1000_ada,
     SUM(stake_lovelace) / MAX(CAST(circulation_lovelace AS DOUBLE)) * 100 AS staking_participation_pct,
     SUM(
       CASE
@@ -96,6 +98,7 @@ SELECT
   m.circulating_supply_ada,
   m.total_staked_ada,
   m.total_declared_pledge_ada,
+  m.oversat_if_k_1000_ada,
   m.staking_participation_pct,
   m.pools_declared_pledge_gte_30pct_saturation
 FROM epoch_spine es
