@@ -289,6 +289,7 @@ SELECT
   es.epoch,
   m.grouped_mav,
   m.grouped_mav_with_d,
+  m.grouped_mav - m.grouped_mav_with_d AS d_impact_on_grouped_mav,
   m.ungrouped_mav,
   m.declared_map,
   m.ungrouped_map
