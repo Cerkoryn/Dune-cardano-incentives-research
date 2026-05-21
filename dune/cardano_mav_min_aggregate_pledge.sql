@@ -17,6 +17,14 @@ pool_group_map AS (
   FROM dune.cerkoryn.dataset_cardano_pool_groups_map
 ),
 
+protocol_params AS (
+  SELECT
+    CAST(epoch AS INTEGER) AS epoch,
+    COALESCE(CAST(decentralisation AS DOUBLE), 0) AS decentralisation
+  FROM dune.cerkoryn.dataset_cardano_epoch_protocol_params
+  WHERE CAST(epoch AS INTEGER) BETWEEN (SELECT start_epoch FROM epoch_bounds) AND (SELECT end_epoch FROM epoch_bounds)
+),
+
 pool_stake AS (
   SELECT
     epoch,
@@ -96,6 +104,55 @@ grouped_mav AS (
     MIN(entity_rank) AS grouped_mav
   FROM stake_ranked
   WHERE CAST(cumulative_lovelace AS DOUBLE) >= CAST(total_lovelace AS DOUBLE) * 0.50
+  GROUP BY 1
+),
+
+grouped_block_production_entities AS (
+  SELECT
+    em.epoch,
+    em.entity_id,
+    CAST(em.stake_lovelace AS DOUBLE) * (1 - COALESCE(pp.decentralisation, 0)) AS production_weight
+  FROM entity_metrics em
+  LEFT JOIN protocol_params pp
+    ON em.epoch = pp.epoch
+
+  UNION ALL
+
+  SELECT
+    em.epoch,
+    'federated_core_nodes' AS entity_id,
+    SUM(CAST(em.stake_lovelace AS DOUBLE)) * COALESCE(MAX(pp.decentralisation), 0) AS production_weight
+  FROM entity_metrics em
+  LEFT JOIN protocol_params pp
+    ON em.epoch = pp.epoch
+  GROUP BY 1
+),
+
+grouped_block_production_ranked AS (
+  SELECT
+    epoch,
+    entity_id,
+    production_weight,
+    SUM(production_weight) OVER (PARTITION BY epoch) AS total_production_weight,
+    SUM(production_weight) OVER (
+      PARTITION BY epoch
+      ORDER BY production_weight DESC, entity_id
+      ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+    ) AS cumulative_production_weight,
+    ROW_NUMBER() OVER (
+      PARTITION BY epoch
+      ORDER BY production_weight DESC, entity_id
+    ) AS entity_rank
+  FROM grouped_block_production_entities
+  WHERE production_weight > 0
+),
+
+grouped_mav_with_d AS (
+  SELECT
+    epoch,
+    MIN(entity_rank) AS grouped_mav_with_d
+  FROM grouped_block_production_ranked
+  WHERE cumulative_production_weight >= total_production_weight * 0.50
   GROUP BY 1
 ),
 
@@ -213,12 +270,15 @@ metrics AS (
   SELECT
     map.epoch,
     mav.grouped_mav,
+    mavd.grouped_mav_with_d,
     umav.ungrouped_mav,
     map.declared_map,
     umap.ungrouped_map
   FROM min_aggregate_pledge map
   JOIN grouped_mav mav
     ON map.epoch = mav.epoch
+  LEFT JOIN grouped_mav_with_d mavd
+    ON map.epoch = mavd.epoch
   LEFT JOIN ungrouped_mav umav
     ON map.epoch = umav.epoch
   LEFT JOIN ungrouped_min_aggregate_pledge umap
@@ -228,6 +288,7 @@ metrics AS (
 SELECT
   es.epoch,
   m.grouped_mav,
+  m.grouped_mav_with_d,
   m.ungrouped_mav,
   m.declared_map,
   m.ungrouped_map

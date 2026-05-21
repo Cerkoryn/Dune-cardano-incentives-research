@@ -59,6 +59,7 @@ These uploaded Dune tables are used by at least one live dashboard query:
 - MAV means Minimum Attack Vector and is synonymous here with Nakamoto Coefficient.
 - MAP means Min Aggregate Pledge and uses declared pledge only.
 - Grouped MAV/MAP uses `cardano-community/pool_groups`; ungrouped MAV/MAP treats each pool independently.
+- `Group MAV w/d` includes the Shelley-era `d` parameter as a federated block-production entity; after `d=0`, it equals grouped MAV.
 - Declared pledge values above 45B ADA are treated as malformed and filtered to zero in SQL.
 - The active pool count chart has local-only filters: it excludes the Input Output Research November 2025 inactive-pool list and pools retired by epoch.
 

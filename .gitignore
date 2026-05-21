@@ -4,6 +4,7 @@ scripts/__pycache__/
 data/koios_epoch_network_metrics_cache/
 data/koios_pool_history_cache/
 data/pool_groups_repo/
+data/spo-incentives_repo/
 
 # Superseded/generated dashboard scratch artifacts
 data/cardano_historical_unmapped_pool_groups_matches.csv
